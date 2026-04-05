@@ -783,12 +783,15 @@ let tryPort = (index) => {
         log.info ( `Trying port ${globalPorts[index].path} with baud rate ${baudRate} ...` );
         port = new SerialPort ({ path: globalPorts[index].path, baudRate : baudRate }, err => {
             if ( err ) {
-                if ( err.toString().indexOf('Access denied') !== -1 ) { // If access denied error
+                const errStr = err.toString()
+
+                if ( errStr.indexOf('Access denied') !== -1 || errStr.indexOf('File not found') !== -1 ) {
+                    const errType = errStr.indexOf('Access denied') !== -1 ? 'Access denied' : 'File not found'
                     showPopup (
                         'error',
                         'POPUP_CAT_CONNECTION_ISSUE',
-                        "Access denied!",
-                        `Got 'Access denied' on serial port! The application must be restarted!`,
+                        `${errType}!`,
+                        `Got '${errType}' on serial port '${globalPorts[index].path}'! The application must be restarted!`,
                         ['Restart']
                     ).then ( result => {
                         popupCategory = ''
@@ -796,9 +799,8 @@ let tryPort = (index) => {
                             restartApp()
                         }
                     })
-// TODO: Show popup to restart the app in case of: "Error: Opening COM4: File not found"
                     log.error ( err )
-                    reject ( 'ERR_PORT_ACCESS_DENIED' )
+                    reject ( 'ERR_PORT_' + errType.toUpperCase().replace(/ /g, '_') )
                     return
                 }
 
@@ -811,32 +813,48 @@ let tryPort = (index) => {
             resolve ( 'SUCCESS' )
         })
 
-        // Create a promise of write() function
-        port.writePromise = async (data, type ) => {
-            if ( port.isOpen ) {
-                port.write (data, type, (err) => {
-                    if (err) {
-                        return Promise.reject(err);
-                    }
+        // Create a promise wrapper for write() + drain()
+        port.writePromise = (data, type) => {
+            return new Promise ((resolve, reject) => {
+                if ( !port.isOpen ) {
+                    const errMsg = `Tried to write data to port '${port.settings.path}', but the port is closed`
+                    log.error ( errMsg + `: '${data}'`)
+                    setConnectionStatus('disconnected', 'Port closed')
+                    showPopup(
+                        'error',
+                        'POPUP_CAT_CONNECTION_ISSUE',
+                        `Port '${port.settings.path}' is closed!`,
+                        `${errMsg}! Please reset the scan device first and then restart the application.`,
+                        ['Restart']
+                    ).then ( result => {
+                        popupCategory = ''
+                        if ( result.isConfirmed ) {
+                            restartApp()
+                        }
+                    })
+                    return reject ( new Error(errMsg) )
+                }
 
-                    return Promise.resolve();
-                });
-            } else {
-                log.error ( `Tried to write the following data to port '${port.settings.path}', but the port is closed: '${data}'`)
-                showPopup(
-                    'error',
-                    'POPUP_CAT_CONNECTION_ISSUE',
-                    `Port '${port.settings.path}' is closed!`,
-                    `Tried to write data to port '${port.settings.path}', but the port is closed! Please reset the scan device first and then restart th application.`,
-                    ['Restart']
-                ).then ( result => {
-                    popupCategory = ''
-                    if ( result.isConfirmed ) {
-                        restartApp()
-                    }
+                port.write (data, type, (err) => {
+                    if ( err ) return reject ( err )
+                    port.drain ((drainErr) => {
+                        if ( drainErr ) return reject ( drainErr )
+                        resolve ()
+                    })
                 })
-            }
+            })
         }
+
+        // Handle unexpected port disconnection (e.g. USB unplug)
+        port.on ('close', () => {
+            log.warn ( `Serial port '${globalPorts[index].path}' was closed unexpectedly!` )
+            setConnectionStatus('disconnected', 'Disconnected')
+        })
+
+        port.on ('error', (err) => {
+            log.error ( `Serial port error on '${globalPorts[index].path}': ${err}` )
+            setConnectionStatus('disconnected', 'Port error')
+        })
     })
 }
 

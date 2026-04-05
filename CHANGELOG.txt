@@ -5,13 +5,17 @@ V2.6.0
 * Live input validation highlights invalid frequency values
 * Connection status (connected/connecting/disconnected) is now always visible in the toolbar
 
+## Bug Fixes
+* Fixed writePromise not returning a proper Promise (serial writes were fire-and-forget, await had no effect)
+* Added port.drain() after writes to ensure data is flushed before resolving
+* Handle 'File not found' serial port error with restart popup (previously unhandled)
+* Added port.on('close') and port.on('error') handlers for disconnect detection
+
 ## Refactoring
 * Unified duplicated device handling in portOpenCb (RF Explorer / TinySA branches merged into one)
 * Extracted shared helpers: processScanData, buildConfigLabel, handleConfigData, startResponseCheckTimer
 * Extracted togglePresetDown/togglePresetUp functions, simplifying wheel and keydown handlers
 * Added getDisplayName() and convertScanValue() to device classes (RFExplorer, TinySA)
-
-## Bug Fixes
 * Fixed missing portDetectionIndex reset in RF Explorer reconnect handler (was already present in TinySA branch)
 * Fixed variable shadowing (inner loop variable `i` renamed to `j`) in scan data congestion check
 
