@@ -58,6 +58,15 @@ let responseCheckTimer  = null
 let formValid = false
 let ctx = null;
 
+// Auto-reconnect state
+const RECONNECT_DELAY_MIN = 1000   // 1 second
+const RECONNECT_DELAY_MAX = 15000  // 15 seconds
+const PORT_POLL_INTERVAL  = 3000   // 3 seconds
+let reconnectTimer    = null
+let reconnectDelay    = RECONNECT_DELAY_MIN
+let portPollTimer     = null
+let isReconnecting    = false
+
 let curKeyInputTarget = '';
 let keyInputTargets = {
     MANUAL_BAND_SETTINGS: 'MANUAL_BAND_SETTINGS',
@@ -281,6 +290,13 @@ document.addEventListener('DOMContentLoaded', function () {
         for ( let i = 0 ; i < global.SWEEP_POINTS ; i++ )
             myChart.data.datasets[LINE_LIVE].data[i] = undefined
         myChart.update()
+    })
+
+    // Reconnect button
+    document.getElementById('toolbar-reconnect').addEventListener('click', () => {
+        log.info("Manual reconnect triggered from toolbar")
+        cancelAutoReconnect()
+        connectDevice ( COM_PORT ? COM_PORT : 'AUTO', true )
     })
 
     if (DARK_MODE) {
@@ -538,7 +554,83 @@ function openDonateWindow () {
 //win.webContents.openDevTools()
 }
 
+function cancelAutoReconnect () {
+    if ( reconnectTimer ) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+    }
+    if ( portPollTimer ) {
+        clearInterval(portPollTimer)
+        portPollTimer = null
+    }
+    isReconnecting = false
+    reconnectDelay = RECONNECT_DELAY_MIN
+}
+
+function scheduleReconnect () {
+    if ( isReconnecting ) return
+    isReconnecting = true
+    reconnectDelay = RECONNECT_DELAY_MIN
+
+    function attemptReconnect () {
+        log.info ( `Auto-reconnect: attempting in ${reconnectDelay/1000}s ...` )
+        setConnectionStatus('connecting', `Reconnecting in ${Math.round(reconnectDelay/1000)}s...`)
+
+        reconnectTimer = setTimeout ( () => {
+            reconnectTimer = null
+            log.info ( 'Auto-reconnect: trying now ...' )
+            setConnectionStatus('connecting', 'Reconnecting...')
+
+            disconnectPort().then ( () => {
+                scanPorts().then ( () => {
+                    connectPort(COM_PORT ? COM_PORT : 'AUTO')
+                        .then ( () => {
+                            // Success — reset state and start scanning
+                            cancelAutoReconnect()
+                            scanDevice.getConfiguration()
+                        })
+                        .catch ( () => {
+                            // Port open failed — retry with backoff
+                            reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_DELAY_MAX)
+                            attemptReconnect()
+                        })
+                }).catch ( () => {
+                    // No ports found — retry with backoff
+                    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_DELAY_MAX)
+                    attemptReconnect()
+                })
+            })
+        }, reconnectDelay)
+    }
+
+    attemptReconnect()
+
+    // Also poll for new ports appearing (hotplug detection)
+    if ( !portPollTimer ) {
+        portPollTimer = setInterval ( () => {
+            if ( !isReconnecting ) {
+                clearInterval(portPollTimer)
+                portPollTimer = null
+                return
+            }
+            SerialPort.list().then ( (ports) => {
+                if ( ports.length > 0 && ports.length !== globalPorts.length ) {
+                    log.info ( `Auto-reconnect: port list changed (${globalPorts.length} -> ${ports.length}), retrying immediately` )
+                    // Cancel current backoff timer and retry now
+                    if ( reconnectTimer ) {
+                        clearTimeout(reconnectTimer)
+                        reconnectTimer = null
+                    }
+                    reconnectDelay = RECONNECT_DELAY_MIN
+                    attemptReconnect()
+                }
+            }).catch ( () => {} ) // Ignore poll errors
+        }, PORT_POLL_INTERVAL)
+    }
+}
+
 function connectDevice (portIdentifier, shouldScan ) {
+    cancelAutoReconnect()
     setConnectionStatus('connecting', 'Connecting...')
     if ( shouldScan ) {
         portDetectionIndex = 0 // when a port scan is requested, it can be considered that all ports should be checked
@@ -847,13 +939,17 @@ let tryPort = (index) => {
 
         // Handle unexpected port disconnection (e.g. USB unplug)
         port.on ('close', () => {
+            if ( intentionalClose ) return
             log.warn ( `Serial port '${globalPorts[index].path}' was closed unexpectedly!` )
-            setConnectionStatus('disconnected', 'Disconnected')
+            setConnectionStatus('disconnected', 'Disconnected — auto-reconnecting...')
+            port = null
+            scheduleReconnect()
         })
 
         port.on ('error', (err) => {
             log.error ( `Serial port error on '${globalPorts[index].path}': ${err}` )
-            setConnectionStatus('disconnected', 'Port error')
+            setConnectionStatus('disconnected', 'Port error — auto-reconnecting...')
+            scheduleReconnect()
         })
     })
 }
@@ -1033,12 +1129,16 @@ function connectPort ( portIdentifier ) {
     })
 }
 
+let intentionalClose = false
+
 function disconnectPort () {
     return new Promise ((resolve, reject) => {
         if ( port && port.isOpen) {
             log.info ( "Closing existing connection to current scan device ..." )
+            intentionalClose = true
             port.close(() => {
                 port = null
+                intentionalClose = false
                 log.info ( "Port closed successfully.")
                 resolve()
             })

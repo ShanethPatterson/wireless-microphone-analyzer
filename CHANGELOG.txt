@@ -4,6 +4,9 @@ V2.6.0
 * Start and stop frequency can now be entered directly in the toolbar with smart unit parsing (Hz, kHz, MHz, GHz)
 * Live input validation highlights invalid frequency values
 * Connection status (connected/connecting/disconnected) is now always visible in the toolbar
+* Auto-reconnect with exponential backoff when device disconnects unexpectedly (e.g. USB unplug)
+* USB hotplug detection — polls for new ports and retries immediately when a device is plugged in
+* Reconnect button in toolbar for manual reconnection
 
 ## Bug Fixes
 * Fixed writePromise not returning a proper Promise (serial writes were fire-and-forget, await had no effect)
