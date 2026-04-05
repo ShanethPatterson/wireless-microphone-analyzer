@@ -85,6 +85,13 @@ class RFExplorer {
         }
     }
 
+    async hold () {
+        log.info ( 'Sending HOLD command to stop scan data streaming ...' )
+        let buf = Buffer.from ( RFExplorer.deviceCommands.HOLD )
+        buf.writeUInt8 ( 0x4, 1 )
+        await this.port.writePromise ( buf, 'ascii' )
+    }
+
     getConfiguration () {
         // IMPORTANT: After requesting the configuration data, the device immediately starts sending scan data.
         // No additional command is required!

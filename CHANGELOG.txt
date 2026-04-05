@@ -7,6 +7,9 @@ V2.6.0
 * Auto-reconnect with exponential backoff when device disconnects unexpectedly (e.g. USB unplug)
 * USB hotplug detection — polls for new ports and retries immediately when a device is plugged in
 * Reconnect button in toolbar for manual reconnection
+* High-resolution scanning: splits wide frequency ranges into narrow sub-bands for much higher resolution
+* Hi-Res toggle button in toolbar with segment progress indicator
+* Added hold() method to RF Explorer driver for pausing scan data between segments
 
 ## Bug Fixes
 * Fixed writePromise not returning a proper Promise (serial writes were fire-and-forget, await had no effect)

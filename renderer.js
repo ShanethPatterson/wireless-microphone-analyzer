@@ -18,6 +18,7 @@ const moment                    = require('moment-timezone');
 // Supported devices
 const RFExplorer                = require('./scan_devices/rf_explorer.js');
 const TinySA                    = require('./scan_devices/tiny_sa.js');
+const HiResScan                 = require('./hires_scan.js');
 
 const SAVED_DATA_VERSION = 1
 
@@ -66,6 +67,10 @@ let reconnectTimer    = null
 let reconnectDelay    = RECONNECT_DELAY_MIN
 let portPollTimer     = null
 let isReconnecting    = false
+
+// High-resolution scan state
+let hiResScan = new HiResScan()
+let hiResEnabled = false
 
 let curKeyInputTarget = '';
 let keyInputTargets = {
@@ -176,6 +181,81 @@ else
 var chDispValShadowArr = [];
 
 var myChart = null
+
+function startHiResScan () {
+    if ( !scanDevice || !hiResEnabled ) return
+
+    const deviceClasses = { 'RF_EXPLORER': RFExplorer, 'TINY_SA': TinySA }
+    const deviceClass = deviceClasses[global.SCAN_DEVICE]
+    if ( !deviceClass ) return
+
+    const nativePoints = global.SWEEP_POINTS
+    const minSpan = global.MIN_SPAN || 112000
+
+    hiResScan = new HiResScan()
+
+    hiResScan.onProgress = (segIdx, totalSegs) => {
+        const progress = document.getElementById('toolbar-hires-progress')
+        if ( progress ) {
+            progress.style.display = 'inline'
+            progress.textContent = `Seg ${segIdx + 1}/${totalSegs}`
+        }
+    }
+
+    hiResScan.onComplete = (compositeData, compositeFreqs, totalPoints) => {
+        const progress = document.getElementById('toolbar-hires-progress')
+        if ( progress ) {
+            progress.textContent = `${totalPoints} pts`
+        }
+        displayHiResResults(compositeData, compositeFreqs, totalPoints)
+    }
+
+    hiResScan.start(
+        scanDevice, data$,
+        global.START_FREQ, global.STOP_FREQ,
+        nativePoints, minSpan,
+        deviceClass.convertScanValue,
+        global.SCAN_DEVICE
+    ).catch(err => {
+        log.error(`HiRes scan failed: ${err}`)
+        hiResEnabled = false
+        const btn = document.getElementById('toolbar-hires')
+        if ( btn ) btn.classList.remove('toolbar-btn-active')
+    })
+}
+
+function displayHiResResults (compositeData, compositeFreqs, totalPoints) {
+    // Update chart labels with composite frequencies
+    myChart.data.labels = compositeFreqs.map(f => formatFrequencyString(f))
+
+    // Update live scan data with composite peak values
+    myChart.data.datasets[LINE_LIVE].data = compositeData.map(v => {
+        if ( v === undefined ) return undefined
+        return v < global.MIN_DBM ? global.MIN_DBM : v
+    })
+
+    // Resize other datasets to match the new point count
+    const datasets = [LINE_RECOMMENDED, LINE_FORBIDDEN, LINE_CONGESTED, LINE_GRIDS, LINE_FORBIDDEN_MARKERS]
+    for ( const ds of datasets ) {
+        if ( myChart.data.datasets[ds].data.length !== totalPoints ) {
+            myChart.data.datasets[ds].data = new Array(totalPoints).fill(undefined)
+        }
+    }
+
+    // Update congestion threshold line
+    myChart.data.datasets[LINE_CONGEST_TRESH].data = []
+    myChart.data.datasets[LINE_CONGEST_TRESH].data[0] = CONGESTION_LEVEL_DBM
+    myChart.data.datasets[LINE_CONGEST_TRESH].data[totalPoints - 1] = CONGESTION_LEVEL_DBM
+
+    // Update axis label
+    const label = "Range: " + formatFrequencyString(global.START_FREQ) + " - " + formatFrequencyString(global.STOP_FREQ) +
+        " Hz    |    Hi-Res: " + totalPoints + " points" +
+        "    |    Span: " + formatFrequencyString(global.STOP_FREQ - global.START_FREQ) + " Hz"
+    myChart.options.scales.xAxes[0].scaleLabel.labelString = label
+
+    hideWaitIndicator()
+    myChart.update()
+}
 
 function formatFreqForDisplay (freqHz) {
     if ( freqHz === undefined || freqHz === null ) return ''
@@ -297,6 +377,37 @@ document.addEventListener('DOMContentLoaded', function () {
         log.info("Manual reconnect triggered from toolbar")
         cancelAutoReconnect()
         connectDevice ( COM_PORT ? COM_PORT : 'AUTO', true )
+    })
+
+    // Hi-Res toggle button
+    document.getElementById('toolbar-hires').addEventListener('click', () => {
+        const btn = document.getElementById('toolbar-hires')
+        const progress = document.getElementById('toolbar-hires-progress')
+
+        if ( hiResEnabled ) {
+            // Disable hi-res
+            hiResEnabled = false
+            hiResScan.stop()
+            btn.classList.remove('toolbar-btn-active')
+            progress.style.display = 'none'
+            log.info('Hi-Res scanning disabled')
+
+            // Restore normal scanning with current frequency range
+            if ( scanDevice ) {
+                showWaitIndicator()
+                scanDevice.setConfiguration(global.START_FREQ, global.STOP_FREQ, global.SWEEP_POINTS)
+            }
+        } else {
+            // Enable hi-res
+            if ( !scanDevice ) {
+                log.error('Hi-Res: No device connected')
+                return
+            }
+            hiResEnabled = true
+            btn.classList.add('toolbar-btn-active')
+            log.info('Hi-Res scanning enabled')
+            startHiResScan()
+        }
     })
 
     if (DARK_MODE) {
@@ -1391,8 +1502,15 @@ function setBand ( startFreq, stopFreq, details) {
 
     BAND_DETAILS = details;
 
-    showWaitIndicator()
-    scanDevice.setConfiguration ( global.START_FREQ, global.STOP_FREQ, global.SWEEP_POINTS )
+    // If hi-res is active, restart the scan with the new range
+    if ( hiResEnabled ) {
+        hiResScan.stop()
+        showWaitIndicator()
+        startHiResScan()
+    } else {
+        showWaitIndicator()
+        scanDevice.setConfiguration ( global.START_FREQ, global.STOP_FREQ, global.SWEEP_POINTS )
+    }
 }
 
 ipcRenderer.on ( 'SET_VENDOR_4_ANALYSIS', (event, message) => {

@@ -104,6 +104,16 @@ body {
     flex: 1;
 }
 
+.toolbar-btn-active {
+    background: #0066bb;
+    border-color: #0077dd;
+    color: #fff;
+}
+
+.toolbar-btn-active:hover {
+    background: #0077dd;
+}
+
 .status-dot {
     display: inline-block;
     width: 8px;
