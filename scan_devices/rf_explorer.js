@@ -319,6 +319,14 @@ class RFExplorer {
         })
     }
 
+    static getDisplayName () {
+        return RFExplorer.NAME;
+    }
+
+    static convertScanValue (raw) {
+        return -(raw.charCodeAt(0) / 2);
+    }
+
     static isValidFreqConfig ( startFreq, stopFreq ) {
         if ( startFreq < global.MIN_FREQ || stopFreq > global.MAX_FREQ || startFreq >= stopFreq ) {
             log.error ( "Invalid frequency configuration: " + startFreq + " / " + stopFreq )

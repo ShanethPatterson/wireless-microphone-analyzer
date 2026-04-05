@@ -1,3 +1,129 @@
+/* Layout: canvas fills viewport minus toolbar height */
+body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+#graph2d {
+    width: 100vw;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* Toolbar */
+#toolbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: #2b2b2b;
+    border-top: 1px solid #444;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 12px;
+    color: #ddd;
+    user-select: none;
+}
+
+.toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.toolbar-label {
+    color: #aaa;
+    white-space: nowrap;
+}
+
+.toolbar-input {
+    width: 100px;
+    padding: 3px 6px;
+    border: 1px solid #555;
+    border-radius: 3px;
+    background: #1a1a1a;
+    color: #eee;
+    font-size: 12px;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+.toolbar-input:focus {
+    outline: none;
+    border-color: #0099ff;
+}
+
+.toolbar-input.input-invalid {
+    border-color: #ff4444;
+    background: #2a1010;
+}
+
+.toolbar-btn {
+    padding: 3px 8px;
+    border: 1px solid #555;
+    border-radius: 3px;
+    background: #3a3a3a;
+    color: #ddd;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+.toolbar-btn:hover {
+    background: #4a4a4a;
+    border-color: #777;
+}
+
+.toolbar-btn:active {
+    background: #2a2a2a;
+}
+
+.toolbar-btn-primary {
+    background: #0066bb;
+    border-color: #0077dd;
+    color: #fff;
+}
+
+.toolbar-btn-primary:hover {
+    background: #0077dd;
+}
+
+.toolbar-btn-primary:active {
+    background: #005599;
+}
+
+.toolbar-separator {
+    width: 1px;
+    height: 20px;
+    background: #555;
+    margin: 0 2px;
+}
+
+.toolbar-spacer {
+    flex: 1;
+}
+
+.status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 4px;
+}
+
+.status-disconnected {
+    background: #ff4444;
+}
+
+.status-connecting {
+    background: #ffaa00;
+}
+
+.status-connected {
+    background: #44cc44;
+}
+
 .sweetalert2-title {
     font-size: 18px;
     font-family: Arial, Helvetica, sans-serif;

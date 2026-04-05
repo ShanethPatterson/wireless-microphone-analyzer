@@ -147,6 +147,14 @@ class TinySA {
         }
     }
 
+    static getDisplayName () {
+        return TinySA.NAME + (TinySA.MODEL === 'ULTRA' ? ' Ultra' : '');
+    }
+
+    static convertScanValue (raw) {
+        return -raw;
+    }
+
     static isValidFreqConfig ( startFreq, stopFreq ) {
         switch (TinySA.MODEL) {
             case 'BASIC':

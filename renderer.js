@@ -168,8 +168,120 @@ var chDispValShadowArr = [];
 
 var myChart = null
 
+function formatFreqForDisplay (freqHz) {
+    if ( freqHz === undefined || freqHz === null ) return ''
+    if ( freqHz >= 1000000000 ) return (freqHz / 1000000000).toFixed(3) + ' GHz'
+    if ( freqHz >= 1000000 )    return (freqHz / 1000000).toFixed(3) + ' MHz'
+    if ( freqHz >= 1000 )       return (freqHz / 1000).toFixed(1) + ' kHz'
+    return freqHz + ' Hz'
+}
+
+function updateToolbarFreqInputs () {
+    const startInput = document.getElementById('toolbar-start-freq')
+    const stopInput  = document.getElementById('toolbar-stop-freq')
+    if ( startInput && global.START_FREQ !== undefined ) startInput.value = formatFreqForDisplay(global.START_FREQ)
+    if ( stopInput  && global.STOP_FREQ  !== undefined ) stopInput.value  = formatFreqForDisplay(global.STOP_FREQ)
+}
+
+function setConnectionStatus (state, text) {
+    const dot  = document.getElementById('toolbar-status-dot')
+    const label = document.getElementById('toolbar-status-text')
+    if ( !dot || !label ) return
+    dot.className = 'status-dot status-' + state
+    label.textContent = text || state
+}
+
+function validateToolbarFreqInput (inputEl) {
+    const val = normalizeFreqString(inputEl.value)
+    if ( val === false || val === null ) {
+        inputEl.classList.add('input-invalid')
+        return false
+    }
+    inputEl.classList.remove('input-invalid')
+    return true
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('donate-button').addEventListener ('click', () => openDonateWindow() )
+
+    // --- Toolbar wiring ---
+    const toolbarStartFreq = document.getElementById('toolbar-start-freq')
+    const toolbarStopFreq  = document.getElementById('toolbar-stop-freq')
+    const toolbarApplyBtn  = document.getElementById('toolbar-freq-apply')
+
+    // Live validation on frequency inputs
+    toolbarStartFreq.addEventListener('input', () => validateToolbarFreqInput(toolbarStartFreq))
+    toolbarStopFreq.addEventListener ('input', () => validateToolbarFreqInput(toolbarStopFreq))
+
+    // Prevent zoom/pan key handlers from firing while typing in inputs
+    toolbarStartFreq.addEventListener('keydown', (e) => e.stopPropagation())
+    toolbarStopFreq.addEventListener ('keydown', (e) => e.stopPropagation())
+
+    // Apply frequency range
+    toolbarApplyBtn.addEventListener('click', () => {
+        const startFreq = normalizeFreqString(toolbarStartFreq.value)
+        const stopFreq  = normalizeFreqString(toolbarStopFreq.value)
+        if ( startFreq === false || startFreq === null || stopFreq === false || stopFreq === null ) return
+        if ( startFreq >= stopFreq ) return
+        setBand(startFreq, stopFreq, 'Manual freq. range')
+    })
+
+    // Enter key applies frequency range from either input
+    toolbarStartFreq.addEventListener('keydown', (e) => { if (e.key === 'Enter') toolbarApplyBtn.click() })
+    toolbarStopFreq.addEventListener ('keydown', (e) => { if (e.key === 'Enter') toolbarApplyBtn.click() })
+
+    // Zoom and pan buttons
+    document.getElementById('toolbar-zoom-in').addEventListener('click', async () => {
+        if (isExecuting) return
+        isExecuting = true
+        try {
+            zoom(10)
+            BAND_DETAILS = ''
+            showWaitIndicator()
+            await scanDevice.setConfiguration(global.START_FREQ, global.STOP_FREQ, global.SWEEP_POINTS)
+        } finally { isExecuting = false }
+    })
+
+    document.getElementById('toolbar-zoom-out').addEventListener('click', async () => {
+        if (isExecuting) return
+        isExecuting = true
+        try {
+            zoom(-10)
+            BAND_DETAILS = ''
+            showWaitIndicator()
+            await scanDevice.setConfiguration(global.START_FREQ, global.STOP_FREQ, global.SWEEP_POINTS)
+        } finally { isExecuting = false }
+    })
+
+    document.getElementById('toolbar-pan-left').addEventListener('click', async () => {
+        if (isExecuting) return
+        isExecuting = true
+        try {
+            move(-10)
+            BAND_DETAILS = ''
+            showWaitIndicator()
+            await scanDevice.setConfiguration(global.START_FREQ, global.STOP_FREQ, global.SWEEP_POINTS)
+        } finally { isExecuting = false }
+    })
+
+    document.getElementById('toolbar-pan-right').addEventListener('click', async () => {
+        if (isExecuting) return
+        isExecuting = true
+        try {
+            move(10)
+            BAND_DETAILS = ''
+            showWaitIndicator()
+            await scanDevice.setConfiguration(global.START_FREQ, global.STOP_FREQ, global.SWEEP_POINTS)
+        } finally { isExecuting = false }
+    })
+
+    // Reset peak button
+    document.getElementById('toolbar-reset-peak').addEventListener('click', () => {
+        log.info("Peak values have been reset (toolbar)")
+        for ( let i = 0 ; i < global.SWEEP_POINTS ; i++ )
+            myChart.data.datasets[LINE_LIVE].data[i] = undefined
+        myChart.update()
+    })
 
     if (DARK_MODE) {
         document.getElementsByTagName('body')[0].setAttribute('class', 'dark-mode')
@@ -427,6 +539,7 @@ function openDonateWindow () {
 }
 
 function connectDevice (portIdentifier, shouldScan ) {
+    setConnectionStatus('connecting', 'Connecting...')
     if ( shouldScan ) {
         portDetectionIndex = 0 // when a port scan is requested, it can be considered that all ports should be checked
         scanPorts()
@@ -434,6 +547,7 @@ function connectDevice (portIdentifier, shouldScan ) {
             .then ( () => scanDevice.getConfiguration() )
             .catch( (error) => {
                 log.error ( "scanPorts(): " + error )
+                setConnectionStatus('disconnected', 'Disconnected')
             })
     } else {
         connectPort(portIdentifier)
@@ -727,364 +841,74 @@ let tryPort = (index) => {
 }
 
 const portOpenCb = () => {
-    switch ( global.SCAN_DEVICE ) {
-        case 'RF_EXPLORER':
-            scanDevice = new RFExplorer(port);
+    const deviceClasses = { 'RF_EXPLORER': RFExplorer, 'TINY_SA': TinySA }
+    const deviceClass = deviceClasses[global.SCAN_DEVICE]
 
-            if ( scanDevice ) {
-                scanDevice.setHandler(data$)
-
-                if ( dataSubscription ) {
-                    dataSubscription.unsubscribe()
-                }
-
-                dataSubscription = data$.subscribe ( data => {
-                    switch ( data[0].type ) {
-                        case 'NAME':
-                            if ( data[0].values.NAME === RFExplorer.NAME ) {
-                                log.info ( `Stoping response check timer #${responseCheckTimer} ...` )
-                                clearTimeout ( responseCheckTimer )
-                                responseCheckTimer = null
-                                log.info ( `Successfully detected '${data[0].values.NAME}' hardware!` )
-                                if ( popupCategory === 'POPUP_CAT_CONNECTION_ISSUE' ) {
-                                    popupCategory = ''
-                                    Swal.close()
-                                }
-                                ipcRenderer.send('SET_MAIN_WINDOW_TITLE', `${RFExplorer.NAME} on ${globalPorts[portDetectionIndex].path}`)
-                                return
-                            }
-                            break
-
-                        case 'CONFIG_DATA':
-                            global.START_FREQ = data[0].values.START_FREQ
-                            global.STOP_FREQ = data[0].values.STOP_FREQ
-                            FREQ_STEP = data[0].values.FREQ_STEP
-                            global.SWEEP_POINTS = data[0].values.SWEEP_POINTS
-                            global.MIN_FREQ = data[0].values.MIN_FREQ
-                            global.MAX_FREQ = data[0].values.MAX_FREQ
-                            global.MIN_SPAN = data[0].values.MIN_SPAN
-                            global.MAX_SPAN = data[0].values.MAX_SPAN
-
-                            configStore.set ( 'start_freq', global.START_FREQ )
-                            configStore.set ( 'stop_freq' , global.STOP_FREQ  )
-                            configStore.set ( 'freq_step' , FREQ_STEP  )
-
-                            if ( !RFExplorer.isValidFreqConfig ( data[0].values.START_FREQ, data[0].values.STOP_FREQ ) ) {
-                                log.error ( `Invalid frequency range: ${data[0].values.START_FREQ} - ${data[0].values.STOP_FREQ} Hz!` )
-
-                                showPopup(
-                                    'warning',
-                                    'POPUP_CAT_INVALID_FREQUENCY',
-                                    "Invalid frequency range!",
-                                    `The currently selected frequency range is not valid for device <b>${RFExplorer.NAME}</b>!` +
-                                    `<br><br>Allowed range is: ${global.MIN_FREQ} - ${global.MAX_FREQ} Hz` +
-                                    `<br><br>Current range is: ${data[0].values.START_FREQ} - ${data[0].values.STOP_FREQ} Hz`,
-                                    ['Ok']
-                                )
-                                return
-                            }
-
-                            let band_details = ""
-
-                            if ( !BAND_DETAILS )
-                                band_details = "    |    Band: <NO BAND SELECTED>"
-                            else 
-                                band_details = "    |    Band: " + BAND_DETAILS + ""
-
-                            let country_information = ""
-
-                            if ( !COUNTRY_CODE || !COUNTRY_NAME)
-                                country_information = "    |    Country: Germany (DE)"
-                            else
-                                country_information = "    |    Country: " + COUNTRY_NAME + " (" + COUNTRY_CODE + ")"
-
-                            const sweep_points = "    |    Sweep points: " + global.SWEEP_POINTS
-
-                            let label = "Range: " + formatFrequencyString(global.START_FREQ) + " - " + formatFrequencyString(global.STOP_FREQ) + " Hz    |    Span: " + formatFrequencyString(global.STOP_FREQ - global.START_FREQ) + " Hz" + country_information + band_details +  sweep_points
-
-                            myChart.options.scales.xAxes[0].scaleLabel.labelString = label
-                            configStore.set ( 'band_label' , label )
-                            BAND_LABEL = label
-                            updateChart ()
-                            break
-
-                        case 'SCAN_DATA': {
-                            hideWaitIndicator()
-                            let val_changed = false
-
-                            for ( let i = 0 ; i < data[0].values.length ; i++ ) {
-                                let value = -( data[0].values[i].charCodeAt(0) / 2 )
-
-                                if ( value < global.MIN_DBM)
-                                    value = global.MIN_DBM
-
-                                if ( value > myChart.data.datasets[LINE_LIVE].data[i] || myChart.data.datasets[LINE_LIVE].data[i] === undefined ) {
-                                    myChart.data.datasets[LINE_LIVE].data[i] = value
-                                    val_changed = true
-
-                                    let congestedChannel = checkCongestion ( i, value )
-
-                                    if ( congestedChannel ) {
-                                        for ( let i = congestedChannel[0] ; i <= congestedChannel[1] ; i++ ) {
-                                            myChart.data.datasets[LINE_RECOMMENDED].data[i] = undefined
-                                            myChart.data.datasets[LINE_CONGESTED  ].data[i] = global.MAX_DBM
-                                        }
-                                    }
-                                }
-                            }
-        
-                            if ( val_changed ) {
-                                myChart.update()
-                            }
-                        } break
-                    }
-                })
-
-                // In case another timer is running stop it!
-                if ( responseCheckTimer ) {
-                    log.info ( `Stoping response check timer #${responseCheckTimer} ...` )
-                    clearTimeout ( responseCheckTimer )
-                    responseCheckTimer = null
-                }
-
-                responseCheckTimer = setTimeout ( () => {
-                    log.info ( `Response check timer ${responseCheckTimer} expired!`)
-                    responseCheckTimer = null
-                    log.error ( `No or invalid response from '${RFExplorer.NAME}' on '${globalPorts[portDetectionIndex].path}'!`)
-                    log.error ( `Make sure that no other serial USB device is connected to '${globalPorts[portDetectionIndex].path}!'`)
-
-                    // If serial port was connected successfully but to a different device type
-                    disconnectPort().then ( async err => {
-                        if (err) {
-                            log.error(err)
-                            return
-                        }
-
-                        if ( COM_PORT === 'AUTO' ) {
-                            portDetectionIndex++
-
-                            if ( portDetectionIndex < globalPorts.length ) {
-                                log.info ( `Now trying port with index ${portDetectionIndex}`)
-                                connectDevice ( 'AUTO', false )
-                            } else {
-                                log.info ( `No more ports available!` )
-                            }
-
-                            if ( portDetectionIndex === globalPorts.length || COM_PORT !== 'AUTO' ) {
-                                // No more ports available
-                                showPopup (
-                                    "error",
-                                    'POPUP_CAT_CONNECTION_ISSUE',
-                                    "No or invalid response from scan device!",
-                                    `<b>${RFExplorer.NAME}</b> could not be found or identified properly on any of the available ports!` +
-                                        `<br><br>Please choose the correct device type from the menu or connect the chosen device. If the correct` +
-                                        ` device is already connected, please restart it and then click 'Reconnect'.`,
-                                    ['Reconnect', 'Cancel']                                
-                                ).then ( result => {
-                                    if ( result.isConfirmed ) {
-                                        popupCategory = ''
-                                        connectDevice ( COM_PORT?COM_PORT:'AUTO', true )
-                                    }
-                                })
-                            }
-                        }
-                    })
-                }, SERIAL_RESPONSE_TIMEOUT)
-
-                log.info ( `Started response check timer ${responseCheckTimer}` )
-            } else {
-                log.error ("Unable to instantiate class RFExplorer!")
-            }
-            break;
-
-        case 'TINY_SA':
-            scanDevice = new TinySA(port, data$);
-
-            if ( scanDevice ) {
-                scanDevice.setHandler()
-
-                if ( dataSubscription ) {
-                    dataSubscription.unsubscribe()
-                }
-
-                dataSubscription = data$.subscribe ( data => {
-                    switch ( data[0].type ) {
-                        case 'NAME':
-                            if ( data[0].values.NAME === TinySA.NAME ) {
-                                log.info ( `Stoping response check timer #${responseCheckTimer} ...` )
-                                clearTimeout ( responseCheckTimer )
-                                responseCheckTimer = null
-                                log.info ( `Successfully detected '${data[0].values.NAME}${TinySA.MODEL==="ULTRA"?" Ultra":""}' hardware!` )
-                                if ( popupCategory === 'POPUP_CAT_CONNECTION_ISSUE' ) {
-                                    popupCategory = ''
-                                    Swal.close()
-                                }
-                                ipcRenderer.send('SET_MAIN_WINDOW_TITLE', `${TinySA.NAME} on ${globalPorts[portDetectionIndex].path}`)
-                                return
-                            }
-                            break
-
-                        case 'CONFIG_DATA':
-                            global.START_FREQ = data[0].values.START_FREQ
-                            global.STOP_FREQ = data[0].values.STOP_FREQ
-                            FREQ_STEP = data[0].values.FREQ_STEP
-                            global.MIN_FREQ = data[0].values.MIN_FREQ
-                            global.MAX_FREQ = data[0].values.MAX_FREQ
-                            global.MIN_SPAN = data[0].values.MIN_SPAN
-                            global.MAX_SPAN = data[0].values.MAX_SPAN
-
-                            configStore.set ( 'start_freq', global.START_FREQ )
-                            configStore.set ( 'stop_freq' , global.STOP_FREQ  )
-                            configStore.set ( 'freq_step' , FREQ_STEP  )
-
-                            if ( !TinySA.isValidFreqConfig ( data[0].values.START_FREQ, data[0].values.STOP_FREQ ) ) {
-                                log.error ( `Invalid frequency range: ${data[0].values.START_FREQ} - ${data[0].values.STOP_FREQ} Hz!` )
-
-                                showPopup(
-                                    'warning',
-                                    'POPUP_CAT_INVALID_FREQUENCY',
-                                    "Invalid frequency range!",
-                                    `The currently selected frequency range is not valid for device <b>${TinySA.NAME}${TinySA.MODEL==="ULTRA"?" Ultra":""}</b>!` +
-                                    `<br><br>Allowed range is: ${global.MIN_FREQ} - ${global.MAX_FREQ} Hz` +
-                                    `<br><br>Current range is: ${data[0].values.START_FREQ} - ${data[0].values.STOP_FREQ} Hz`,
-                                    ['Ok']
-                                )
-                                return
-                            }
-
-                            const range = "Range: " + formatFrequencyString(global.START_FREQ) + " - " + formatFrequencyString(global.STOP_FREQ) + " Hz"
-                            const span  = "    |    Span: " + formatFrequencyString(global.STOP_FREQ - global.START_FREQ) + " Hz"
-
-                            let country = ''
-
-                            if ( !COUNTRY_CODE || !COUNTRY_NAME) {
-                                country = "    |    Country: Germany (DE)"
-                            } else {
-                                country = "    |    Country: " + COUNTRY_NAME + " (" + COUNTRY_CODE + ")"
-                            }
-
-                            let band = ''
-                            if ( !BAND_DETAILS ) {
-                                band = "    |    Band: <NO BAND SELECTED>"
-                            } else {
-                                band = "    |    Band: " + BAND_DETAILS + ""
-                            }
-
-                            const sweep_points = "    |    Sweep points: " + global.SWEEP_POINTS
-
-                            const label = range + span + country + band + sweep_points
-
-                            myChart.options.scales.xAxes[0].scaleLabel.labelString = label
-                            configStore.set ( 'band_label' , label )
-                            BAND_LABEL = label
-                            updateChart ()
-                            break
-
-                        case 'SCAN_DATA': {
-                            hideWaitIndicator()
-                            let val_changed = false
-
-                            for ( let i = 0 ; i < data[0].values.length ; i++ ) {
-                                let value = -data[0].values[i]
-    
-                                if ( value < global.MIN_DBM)
-                                    value = global.MIN_DBM
-    
-                                if ( value > myChart.data.datasets[LINE_LIVE].data[i] || myChart.data.datasets[LINE_LIVE].data[i] === undefined ) {
-                                    myChart.data.datasets[LINE_LIVE].data[i] = value
-                                    val_changed = true
-    
-                                    let congestedChannel = checkCongestion ( i, value )
-    
-                                    if ( congestedChannel ) {
-                                        for ( let i = congestedChannel[0] ; i <= congestedChannel[1] ; i++ ) {
-                                            myChart.data.datasets[LINE_RECOMMENDED].data[i] = undefined
-                                            myChart.data.datasets[LINE_CONGESTED  ].data[i] = global.MAX_DBM
-                                        }
-                                    }
-                                }
-                            }
-    
-                            if ( val_changed ) {
-                                myChart.update()
-                            }
-                        } break
-
-                        case 'ERROR_RECEIVED_TRASH':
-                            log.info ( `Stoping response check timer #${responseCheckTimer} ...` )
-                            clearTimeout ( responseCheckTimer )
-                            responseCheckTimer = null
-                            disconnectPort().then ( () => connectDevice(COM_PORT?COM_PORT:'AUTO', true) )
-                            return
-                    }
-                })
-
-                // In case another timer is running stop it!
-                if ( responseCheckTimer ) {
-                    log.info ( `Stopped response check timer ${responseCheckTimer} ...` )
-                    clearTimeout ( responseCheckTimer )
-                    responseCheckTimer = null
-                }
-
-                responseCheckTimer = setTimeout ( () => {
-                    log.info ( `Response check timer ${responseCheckTimer} expired!`)
-                    responseCheckTimer = null
-                    log.error ( `No or invalid response from '${TinySA.NAME}${TinySA.MODEL==="ULTRA"?" Ultra":""}' on '${globalPorts[portDetectionIndex].path}'!`)
-                    log.error ( `Make sure that no other serial USB device is connected to '${globalPorts[portDetectionIndex].path}'!`)
-                    data$.next([{
-                        type: 'ERROR_NO_RESPONSE',
-                        status: 'ERROR'
-                    }])
-
-                    // If serial port was connected successfully but to a different device type, disconnect it
-                    disconnectPort().then ( async err => {
-                        if ( err ) {
-                            log.error (err )
-                            return
-                        }
-
-                        if ( COM_PORT === 'AUTO' ) {
-                            portDetectionIndex++
-
-                            if ( portDetectionIndex < globalPorts.length ) {
-                                log.info ( `Now trying port with index ${portDetectionIndex}` )
-                                connectDevice ( 'AUTO', false )
-                            } else {
-                                log.info ( `No more ports available!` )
-                            }
-                        } 
-                        
-                        if ( portDetectionIndex === globalPorts.length || COM_PORT !== 'AUTO' ) {
-                            // No more ports available
-                            showPopup (
-                                "error",
-                                'POPUP_CAT_CONNECTION_ISSUE',
-                                "No or invalid response from scan device!",
-                                `<b>${TinySA.NAME}${TinySA.MODEL==="ULTRA"?" Ultra":""}</b> could not be found or identified properly on any of the available ports!` +
-                                    `<br><br>Please choose the correct device type from the menu or connect the chosen device. If the correct` +
-                                    ` device is already connected, please restart it and then click 'Reconnect'.`,
-                                ['Reconnect', 'Cancel']
-                            ).then ( result => {
-                                if ( result.isConfirmed ) {
-                                    popupCategory = ''
-                                    portDetectionIndex = 0
-                                    connectDevice ( COM_PORT?COM_PORT:'AUTO', true )
-                                }
-                            })
-                        }
-                    })
-                }, SERIAL_RESPONSE_TIMEOUT )
-
-                log.info ( `Started response check timer ${responseCheckTimer}` )
-            } else {
-                log.error ("Unable to instantiate class TinySA!")
-            }
-            break;
-
-        default:
-            log.error ( `Unknown scan device ${global.SCAN_DEVICE}` )
-            scanDevice = null
+    if ( !deviceClass ) {
+        log.error ( `Unknown scan device ${global.SCAN_DEVICE}` )
+        scanDevice = null
+        return
     }
+
+    // Instantiate device (TinySA needs data$ in constructor, RFExplorer does not)
+    if ( global.SCAN_DEVICE === 'TINY_SA' ) {
+        scanDevice = new TinySA(port, data$)
+    } else {
+        scanDevice = new RFExplorer(port)
+    }
+
+    if ( !scanDevice ) {
+        log.error (`Unable to instantiate class ${deviceClass.NAME}!`)
+        return
+    }
+
+    // Set handler (RFExplorer needs data$ passed, TinySA does not)
+    if ( global.SCAN_DEVICE === 'RF_EXPLORER' ) {
+        scanDevice.setHandler(data$)
+    } else {
+        scanDevice.setHandler()
+    }
+
+    if ( dataSubscription ) {
+        dataSubscription.unsubscribe()
+    }
+
+    dataSubscription = data$.subscribe ( data => {
+        switch ( data[0].type ) {
+            case 'NAME':
+                if ( data[0].values.NAME === deviceClass.NAME ) {
+                    log.info ( `Stopping response check timer #${responseCheckTimer} ...` )
+                    clearTimeout ( responseCheckTimer )
+                    responseCheckTimer = null
+                    log.info ( `Successfully detected '${deviceClass.getDisplayName()}' hardware!` )
+                    setConnectionStatus('connected', `${deviceClass.getDisplayName()} on ${globalPorts[portDetectionIndex].path}`)
+                    if ( popupCategory === 'POPUP_CAT_CONNECTION_ISSUE' ) {
+                        popupCategory = ''
+                        Swal.close()
+                    }
+                    ipcRenderer.send('SET_MAIN_WINDOW_TITLE', `${deviceClass.getDisplayName()} on ${globalPorts[portDetectionIndex].path}`)
+                    return
+                }
+                break
+
+            case 'CONFIG_DATA':
+                handleConfigData(data, deviceClass)
+                break
+
+            case 'SCAN_DATA':
+                processScanData(data, deviceClass.convertScanValue)
+                break
+
+            case 'ERROR_RECEIVED_TRASH':
+                log.info ( `Stopping response check timer #${responseCheckTimer} ...` )
+                clearTimeout ( responseCheckTimer )
+                responseCheckTimer = null
+                disconnectPort().then ( () => connectDevice(COM_PORT?COM_PORT:'AUTO', true) )
+                return
+        }
+    })
+
+    startResponseCheckTimer(deviceClass)
 }
 
 function showPortHwError ( msg ) {
@@ -1221,6 +1045,191 @@ function checkCongestion ( pos, val ) {
     }
 
     return false;
+}
+
+function processScanData (data, convertValueFn) {
+    hideWaitIndicator()
+    let val_changed = false
+
+    for ( let i = 0 ; i < data[0].values.length ; i++ ) {
+        let value = convertValueFn(data[0].values[i])
+
+        if ( value < global.MIN_DBM)
+            value = global.MIN_DBM
+
+        if ( value > myChart.data.datasets[LINE_LIVE].data[i] || myChart.data.datasets[LINE_LIVE].data[i] === undefined ) {
+            myChart.data.datasets[LINE_LIVE].data[i] = value
+            val_changed = true
+
+            let congestedChannel = checkCongestion ( i, value )
+
+            if ( congestedChannel ) {
+                for ( let j = congestedChannel[0] ; j <= congestedChannel[1] ; j++ ) {
+                    myChart.data.datasets[LINE_RECOMMENDED].data[j] = undefined
+                    myChart.data.datasets[LINE_CONGESTED  ].data[j] = global.MAX_DBM
+                }
+            }
+        }
+    }
+
+    if ( val_changed ) {
+        myChart.update()
+    }
+}
+
+function buildConfigLabel () {
+    const range = "Range: " + formatFrequencyString(global.START_FREQ) + " - " + formatFrequencyString(global.STOP_FREQ) + " Hz"
+    const span  = "    |    Span: " + formatFrequencyString(global.STOP_FREQ - global.START_FREQ) + " Hz"
+
+    let country = ""
+    if ( !COUNTRY_CODE || !COUNTRY_NAME )
+        country = "    |    Country: Germany (DE)"
+    else
+        country = "    |    Country: " + COUNTRY_NAME + " (" + COUNTRY_CODE + ")"
+
+    let band = ""
+    if ( !BAND_DETAILS )
+        band = "    |    Band: <NO BAND SELECTED>"
+    else
+        band = "    |    Band: " + BAND_DETAILS
+
+    const sweepPts = "    |    Sweep points: " + global.SWEEP_POINTS
+
+    return range + span + country + band + sweepPts
+}
+
+function handleConfigData (data, deviceClass) {
+    global.START_FREQ = data[0].values.START_FREQ
+    global.STOP_FREQ  = data[0].values.STOP_FREQ
+    FREQ_STEP         = data[0].values.FREQ_STEP
+    global.MIN_FREQ   = data[0].values.MIN_FREQ
+    global.MAX_FREQ   = data[0].values.MAX_FREQ
+    global.MIN_SPAN   = data[0].values.MIN_SPAN
+    global.MAX_SPAN   = data[0].values.MAX_SPAN
+
+    // RF Explorer provides SWEEP_POINTS in config data; TinySA does not
+    if ( data[0].values.SWEEP_POINTS !== undefined ) {
+        global.SWEEP_POINTS = data[0].values.SWEEP_POINTS
+    }
+
+    configStore.set ( 'start_freq', global.START_FREQ )
+    configStore.set ( 'stop_freq' , global.STOP_FREQ  )
+    configStore.set ( 'freq_step' , FREQ_STEP  )
+
+    if ( !deviceClass.isValidFreqConfig ( data[0].values.START_FREQ, data[0].values.STOP_FREQ ) ) {
+        log.error ( `Invalid frequency range: ${data[0].values.START_FREQ} - ${data[0].values.STOP_FREQ} Hz!` )
+
+        showPopup(
+            'warning',
+            'POPUP_CAT_INVALID_FREQUENCY',
+            "Invalid frequency range!",
+            `The currently selected frequency range is not valid for device <b>${deviceClass.getDisplayName()}</b>!` +
+            `<br><br>Allowed range is: ${global.MIN_FREQ} - ${global.MAX_FREQ} Hz` +
+            `<br><br>Current range is: ${data[0].values.START_FREQ} - ${data[0].values.STOP_FREQ} Hz`,
+            ['Ok']
+        )
+        return
+    }
+
+    const label = buildConfigLabel()
+    myChart.options.scales.xAxes[0].scaleLabel.labelString = label
+    configStore.set ( 'band_label' , label )
+    BAND_LABEL = label
+    updateChart ()
+    updateToolbarFreqInputs ()
+}
+
+function startResponseCheckTimer (deviceClass) {
+    if ( responseCheckTimer ) {
+        log.info ( `Stopping response check timer #${responseCheckTimer} ...` )
+        clearTimeout ( responseCheckTimer )
+        responseCheckTimer = null
+    }
+
+    responseCheckTimer = setTimeout ( () => {
+        log.info ( `Response check timer ${responseCheckTimer} expired!`)
+        responseCheckTimer = null
+        const displayName = deviceClass.getDisplayName()
+        log.error ( `No or invalid response from '${displayName}' on '${globalPorts[portDetectionIndex].path}'!`)
+        log.error ( `Make sure that no other serial USB device is connected to '${globalPorts[portDetectionIndex].path}'!`)
+
+        // TinySA handler expects an error event to break out of its command/response loop
+        if ( deviceClass.HW_TYPE === 'TINY_SA' ) {
+            data$.next([{ type: 'ERROR_NO_RESPONSE', status: 'ERROR' }])
+        }
+
+        disconnectPort().then ( async err => {
+            if ( err ) {
+                log.error(err)
+                return
+            }
+
+            if ( COM_PORT === 'AUTO' ) {
+                portDetectionIndex++
+
+                if ( portDetectionIndex < globalPorts.length ) {
+                    log.info ( `Now trying port with index ${portDetectionIndex}`)
+                    connectDevice ( 'AUTO', false )
+                } else {
+                    log.info ( `No more ports available!` )
+                }
+            }
+
+            if ( portDetectionIndex === globalPorts.length || COM_PORT !== 'AUTO' ) {
+                setConnectionStatus('disconnected', 'Disconnected')
+                showPopup (
+                    "error",
+                    'POPUP_CAT_CONNECTION_ISSUE',
+                    "No or invalid response from scan device!",
+                    `<b>${displayName}</b> could not be found or identified properly on any of the available ports!` +
+                        `<br><br>Please choose the correct device type from the menu or connect the chosen device. If the correct` +
+                        ` device is already connected, please restart it and then click 'Reconnect'.`,
+                    ['Reconnect', 'Cancel']
+                ).then ( result => {
+                    if ( result.isConfirmed ) {
+                        popupCategory = ''
+                        portDetectionIndex = 0
+                        connectDevice ( COM_PORT?COM_PORT:'AUTO', true )
+                    }
+                })
+            }
+        })
+    }, SERIAL_RESPONSE_TIMEOUT)
+
+    log.info ( `Started response check timer ${responseCheckTimer}` )
+}
+
+function togglePresetDown () {
+    if ( chPreset_Preset > 1 ) {
+        chPreset_Preset--;
+        log.info (`Toggle vendor specific channel presets/banks down. Now is: ${chPreset_Preset}`)
+
+        if ( FREQ_VENDOR_PRESETS [chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series] && chPreset_Vendor && chPreset_Band && chPreset_Series && chPreset_Preset)
+            setVendorChannels ( FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series][parseInt(chPreset_Preset)-1], chPreset_Preset );
+        myChart.update();
+    } else {
+        log.error(`Unable to toggle vendor specific channel presets/banks down! Already on preset ${chPreset_Preset}!`)
+    }
+}
+
+function togglePresetUp () {
+    if ( chPreset_Vendor && chPreset_Band && chPreset_Series && chPreset_Preset && FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series] ) {
+        if ( chPreset_Preset < FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series].length ) {
+            chPreset_Preset++;
+            log.info (`Toggle vendor specific channel presets/banks up. Now is: ${chPreset_Preset}`)
+            setVendorChannels ( FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series][parseInt(chPreset_Preset)-1], chPreset_Preset );
+            myChart.update();
+        } else {
+            log.error(`Unable to toggle vendor specific channel presets/banks up! Only ${FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series].length} presets available!`)
+        }
+    } else {
+        log.error("Unable to toggle vendor specific channel presets/banks up!")
+        log.error(`chPreset_Vendor: ${chPreset_Vendor}`)
+        log.error(`chPreset_Band: ${chPreset_Band}`)
+        log.error(`chPreset_Series: ${chPreset_Series}`)
+        log.error(`chPreset_Preset: ${chPreset_Preset}`)
+        log.error(`FREQ_VENDOR_PRESETS [chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series]: ${FREQ_VENDOR_PRESETS [chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series]}`)
+    }
 }
 
 ipcRenderer.on ( 'CHANGE_BAND', (event, message) => {
@@ -1798,62 +1807,15 @@ document.addEventListener ( "wheel", async e => {
 
     try {
         if ( e.deltaY > 0 ) { // Zoom out
-            if ( !e.shiftKey && !e.ctrlKey ) {
-                zoom(-10) // Zoom out to 120 % by adding 10% of current span on both sides ( = 20% )
-            } else if ( e.shiftKey && !e.ctrlKey ) {
-                zoom(-50) // Zoom out to 200% by adding 50% of span on both sides ( = 100% )
-            }
-
-            BAND_DETAILS = "";
+            zoom( e.shiftKey ? -50 : -10 )
         } else if ( e.deltaY < 0 ) { // Zoom in
-            if ( !e.shiftKey && !e.ctrlKey ) {
-                zoom(10) // Zoom in by removing 10% of span on both sides ( = 20% )
-            } else if ( e.shiftKey && !e.ctrlKey ) {
-                zoom(25) // Zoom in by removing 25% of span on both sides ( = 50% )
-            }
+            zoom( e.shiftKey ? 25 : 10 )
         } else if ( e.deltaX < 0 ) { // Move left
-            if ( e.ctrlKey && !e.shiftKey ) { // Toggle vendor specific channel presets/banks down
-                if ( chPreset_Preset > 1 ) {
-                    chPreset_Preset--;
-                    log.info (`Toggle vendor specific channel presets/banks down. Now is: ${chPreset_Preset}`)
-
-                    if ( FREQ_VENDOR_PRESETS [chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series] && chPreset_Vendor && chPreset_Band && chPreset_Series && chPreset_Preset)
-                        setVendorChannels ( FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series][parseInt(chPreset_Preset)-1], chPreset_Preset );
-                    myChart.update();
-                } else {
-                    log.error(`Unable to toggle vendor specific channel presets/banks down! Already on preset ${chPreset_Preset}!`)
-                }
-                return;
-            } else if ( !e.shiftKey && !e.ctrlKey ) {
-                move(-10); // Move frequency band to LEFT by 10% of span
-            } else if ( e.shiftKey && !e.ctrlKey ) {
-                move(-50); // Move frequency band to LEFT by 50% of span
-            }
+            if ( e.ctrlKey && !e.shiftKey ) { togglePresetDown(); return; }
+            move( e.shiftKey ? -50 : -10 );
         } else if ( e.deltaX > 0 ) { // Move right
-            if ( e.ctrlKey && !e.shiftKey ) { // Toggle vendor specific channel presets/banks up
-                if ( chPreset_Vendor && chPreset_Band && chPreset_Series && chPreset_Preset && FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series] ) {
-                    if ( chPreset_Preset <  FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series].length ) {
-                        chPreset_Preset++;
-                        log.info (`Toggle vendor specific channel presets/banks up. Now is: ${chPreset_Preset}`)
-                        setVendorChannels ( FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series][parseInt(chPreset_Preset)-1], chPreset_Preset );
-                        myChart.update();
-                    } else {
-                        log.error(`Unable to toggle vendor specific channel presets/banks up! Only ${FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series].length} presets available!`)
-                    }
-                } else {
-                    log.error("Unable to toggle vendor specific channel presets/banks up!")
-                    log.error(`chPreset_Vendor: ${chPreset_Vendor}`)
-                    log.error(`chPreset_Band: ${chPreset_Band}`)
-                    log.error(`chPreset_Series: ${chPreset_Series}`)
-                    log.error(`chPreset_Preset: ${chPreset_Preset}`)
-                    log.error(`FREQ_VENDOR_PRESETS [chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series]: ${FREQ_VENDOR_PRESETS [chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series]}`)
-                }
-                return;
-            } else if ( !e.shiftKey && !e.ctrlKey ) {
-                move(10); // Move frequency band to RIGHT by 10% of span
-            } else if ( e.shiftKey && !e.ctrlKey ) {
-                move(50); // Move frequency band to RIGHT by 50% of span
-            }
+            if ( e.ctrlKey && !e.shiftKey ) { togglePresetUp(); return; }
+            move( e.shiftKey ? 50 : 10 );
         }
 
         BAND_DETAILS = "";
@@ -1863,7 +1825,6 @@ document.addEventListener ( "wheel", async e => {
         isExecuting = false;
     }
 });
-
 document.addEventListener ( "keydown", async e => {
     // Block calls while command is in progres.
     if (isExecuting) {
@@ -1920,63 +1881,20 @@ document.addEventListener ( "keydown", async e => {
                     }
                 } else {
                     switch ( e.key ) {
-                        case 'ArrowLeft': // Arrow left
-                            if ( e.ctrlKey && !e.shiftKey ) { // Toggle vendor specific channel presets/banks down
-                                if ( chPreset_Preset > 1 ) {
-                                    chPreset_Preset--;
-                                    log.info (`Toggle vendor specific channel presets/banks down. Now is: ${chPreset_Preset}`)
-
-                                    if ( FREQ_VENDOR_PRESETS [chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series] && chPreset_Vendor && chPreset_Band && chPreset_Series && chPreset_Preset)
-                                        setVendorChannels ( FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series][parseInt(chPreset_Preset)-1], chPreset_Preset );
-                                    myChart.update();
-                                } else {
-                                    log.error(`Unable to toggle vendor specific channel presets/banks down! Already on preset ${chPreset_Preset}!`)
-                                }
-                                return;
-                            } else if ( e.shiftKey && !e.ctrlKey ) {
-                                move(-50); // Move frequency band to LEFT by 50% of span
-                            } else if ( !e.shiftKey && !e.ctrlKey ) {
-                                move(-10); // Move frequency band to LEFT by 10% of span
-                            }
-
+                        case 'ArrowLeft':
+                            if ( e.ctrlKey && !e.shiftKey ) { togglePresetDown(); return; }
+                            move( e.shiftKey ? -50 : -10 );
                             BAND_DETAILS = "";
                             break;
 
-                        case 'ArrowRight': // Arrow right
-                            if ( e.ctrlKey && !e.shiftKey ) { // Toggle vendor specific channel presets/banks up
-                                if ( chPreset_Vendor && chPreset_Band && chPreset_Series && chPreset_Preset && FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series] ) {
-                                    if ( chPreset_Preset <  FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series].length ) {
-                                        chPreset_Preset++;
-                                        log.info (`Toggle vendor specific channel presets/banks up. Now is: ${chPreset_Preset}`)
-                                        setVendorChannels ( FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series][parseInt(chPreset_Preset)-1], chPreset_Preset );
-                                        myChart.update();
-                                    } else {
-                                        log.error(`Unable to toggle vendor specific channel presets/banks up! Only ${FREQ_VENDOR_PRESETS[chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series].length} presets available!`)
-                                    }
-                                } else {
-                                    log.error("Unable to toggle vendor specific channel presets/banks up!")
-                                    log.error(`chPreset_Vendor: ${chPreset_Vendor}`)
-                                    log.error(`chPreset_Band: ${chPreset_Band}`)
-                                    log.error(`chPreset_Series: ${chPreset_Series}`)
-                                    log.error(`chPreset_Preset: ${chPreset_Preset}`)
-                                    log.error(`FREQ_VENDOR_PRESETS [chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series]: ${FREQ_VENDOR_PRESETS [chPreset_Vendor+'_'+chPreset_Band+'_'+chPreset_Series]}`)
-                                }
-                                return;
-                            } else if ( e.shiftKey && !e.ctrlKey ) {
-                                move(50); // Move frequency band to RIGHT by 50% of span
-                            } else if ( !e.shiftKey && !e.ctrlKey ) {
-                                move(10); // Move frequency band to RIGHT by 10% of span
-                            }
-
+                        case 'ArrowRight':
+                            if ( e.ctrlKey && !e.shiftKey ) { togglePresetUp(); return; }
+                            move( e.shiftKey ? 50 : 10 );
                             BAND_DETAILS = "";
                             break;
 
-                        case 'ArrowUp': // Arrow up - Zoom in
-                            if ( !e.shiftKey ) {
-                                zoom(10); // Zoom in by removing 10% of span on both sides ( = 20% )
-                            } else {
-                                zoom(25); // Zoom in by removing 25% of span on both sides ( = 50% )
-                            }
+                        case 'ArrowUp': // Zoom in
+                            zoom( e.shiftKey ? 25 : 10 );
 
                             if ( global.STOP_FREQ - global.START_FREQ < global.SWEEP_POINTS ) {
                                 return;
@@ -1985,13 +1903,8 @@ document.addEventListener ( "keydown", async e => {
                             BAND_DETAILS = "";
                             break;
 
-                        case 'ArrowDown': // Arrow down - Zoom out
-                            if ( !e.shiftKey ) { 
-                                zoom(-10); // Zoom out to 120% by adding 10% of span on both sides ( = 20% )
-                            } else {
-                                zoom(-50); // Zoom out by adding 50% of span on both sides ( = 100% )
-                            }
-
+                        case 'ArrowDown': // Zoom out
+                            zoom( e.shiftKey ? -50 : -10 );
                             BAND_DETAILS = "";
                             break;
 
@@ -2104,5 +2017,7 @@ module.exports = {
     zoom,
     move,
     normalizeFreqString,
-    getBaudrate
+    getBaudrate,
+    formatFreqForDisplay,
+    setConnectionStatus
 }

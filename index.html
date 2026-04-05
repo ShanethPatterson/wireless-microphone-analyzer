@@ -20,7 +20,40 @@
             </div>
         </div>
 
-        <canvas id="graph2d" style="width: 100vw; height: 100vh"></canvas>
+        <canvas id="graph2d"></canvas>
+
+        <div id="toolbar">
+            <div id="toolbar-freq" class="toolbar-group">
+                <label class="toolbar-label">Start</label>
+                <input id="toolbar-start-freq" class="toolbar-input" type="text" placeholder="e.g. 470 MHz">
+                <label class="toolbar-label">Stop</label>
+                <input id="toolbar-stop-freq" class="toolbar-input" type="text" placeholder="e.g. 608 MHz">
+                <button id="toolbar-freq-apply" class="toolbar-btn toolbar-btn-primary" title="Apply frequency range">Apply</button>
+            </div>
+
+            <div class="toolbar-separator"></div>
+
+            <div id="toolbar-nav" class="toolbar-group">
+                <button id="toolbar-pan-left" class="toolbar-btn" title="Pan left (10%)">&#9664;</button>
+                <button id="toolbar-zoom-in" class="toolbar-btn" title="Zoom in (20%)">&#43;</button>
+                <button id="toolbar-zoom-out" class="toolbar-btn" title="Zoom out (20%)">&#8722;</button>
+                <button id="toolbar-pan-right" class="toolbar-btn" title="Pan right (10%)">&#9654;</button>
+            </div>
+
+            <div class="toolbar-separator"></div>
+
+            <div id="toolbar-actions" class="toolbar-group">
+                <button id="toolbar-reset-peak" class="toolbar-btn" title="Reset peak hold (R)">Reset Peak</button>
+            </div>
+
+            <div class="toolbar-spacer"></div>
+
+            <div id="toolbar-status" class="toolbar-group">
+                <span id="toolbar-status-dot" class="status-dot status-disconnected"></span>
+                <span id="toolbar-status-text">Disconnected</span>
+            </div>
+        </div>
+
         <script type="text/javascript">
             require('./renderer.js')
         </script>
