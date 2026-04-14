@@ -1,3 +1,30 @@
+V2.6.0
+## New Features
+* Added toolbar with frequency range inputs, zoom/pan buttons, peak reset, and connection status indicator
+* Start and stop frequency can now be entered directly in the toolbar with smart unit parsing (Hz, kHz, MHz, GHz)
+* Live input validation highlights invalid frequency values
+* Connection status (connected/connecting/disconnected) is now always visible in the toolbar
+* Auto-reconnect with exponential backoff when device disconnects unexpectedly (e.g. USB unplug)
+* USB hotplug detection — polls for new ports and retries immediately when a device is plugged in
+* Reconnect button in toolbar for manual reconnection
+* High-resolution scanning: splits wide frequency ranges into narrow sub-bands for much higher resolution
+* Hi-Res toggle button in toolbar with segment progress indicator
+* Added hold() method to RF Explorer driver for pausing scan data between segments
+
+## Bug Fixes
+* Fixed writePromise not returning a proper Promise (serial writes were fire-and-forget, await had no effect)
+* Added port.drain() after writes to ensure data is flushed before resolving
+* Handle 'File not found' serial port error with restart popup (previously unhandled)
+* Added port.on('close') and port.on('error') handlers for disconnect detection
+
+## Refactoring
+* Unified duplicated device handling in portOpenCb (RF Explorer / TinySA branches merged into one)
+* Extracted shared helpers: processScanData, buildConfigLabel, handleConfigData, startResponseCheckTimer
+* Extracted togglePresetDown/togglePresetUp functions, simplifying wheel and keydown handlers
+* Added getDisplayName() and convertScanValue() to device classes (RFExplorer, TinySA)
+* Fixed missing portDetectionIndex reset in RF Explorer reconnect handler (was already present in TinySA branch)
+* Fixed variable shadowing (inner loop variable `i` renamed to `j`) in scan data congestion check
+
 V2.5.0
 ## New Features
 * Added Shure UHF J4 presets
