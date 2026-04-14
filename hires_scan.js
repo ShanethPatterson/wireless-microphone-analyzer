@@ -1,6 +1,6 @@
 'use strict'
 
-const { Subject, firstValueFrom } = require('rxjs')
+const { firstValueFrom } = require('rxjs')
 const { filter, timeout } = require('rxjs/operators')
 
 // Delay between HOLD command and next setConfiguration to let device settle
@@ -18,10 +18,6 @@ class HiResScan {
         this.compositeFreqs = []
         this.totalPoints = 0
         this.currentSegment = 0
-        this.sweepCount = 0
-        this.onComplete = null  // callback(compositeData, compositeFreqs, totalPoints)
-        this.onProgress = null  // callback(currentSegment, totalSegments)
-        this.aborted = false
     }
 
     /**
@@ -74,18 +70,19 @@ class HiResScan {
     }
 
     /**
-     * Start a high-res scan cycle.
-     *
-     * @param {object} scanDevice  - RFExplorer or TinySA device instance
-     * @param {Subject} data$      - RxJS Subject carrying scan data events
-     * @param {number} startFreq   - Start frequency in Hz
-     * @param {number} stopFreq    - Stop frequency in Hz
-     * @param {number} nativePoints - Points per native sweep
-     * @param {number} minSpan     - Minimum device span in Hz
-     * @param {Function} convertValueFn - Function to convert raw scan value to dBm
-     * @param {string} deviceType  - 'RF_EXPLORER' or 'TINY_SA'
+     * @param {object}   opts
+     * @param {object}   opts.scanDevice   - RFExplorer or TinySA device instance
+     * @param {object}   opts.data$        - RxJS Subject carrying scan data events
+     * @param {number}   opts.startFreq    - Start frequency in Hz
+     * @param {number}   opts.stopFreq     - Stop frequency in Hz
+     * @param {number}   opts.nativePoints - Points per native sweep
+     * @param {number}   opts.minSpan      - Minimum device span in Hz
+     * @param {Function} opts.convertValueFn - Function to convert raw scan value to dBm
+     * @param {string}   opts.deviceType   - 'RF_EXPLORER' or 'TINY_SA'
+     * @param {Function} opts.onProgress   - callback(currentSegment, totalSegments)
+     * @param {Function} opts.onComplete   - callback(compositeData, compositeFreqs, totalPoints)
      */
-    async start (scanDevice, data$, startFreq, stopFreq, nativePoints, minSpan, convertValueFn, deviceType) {
+    async start ({ scanDevice, data$, startFreq, stopFreq, nativePoints, minSpan, convertValueFn, deviceType, onProgress, onComplete }) {
         this.segments = HiResScan.calculateSegments(startFreq, stopFreq, nativePoints, minSpan)
 
         if ( this.segments.length <= 1 ) {
@@ -94,7 +91,6 @@ class HiResScan {
         }
 
         this.active = true
-        this.aborted = false
         this.totalPoints = this.segments.length * nativePoints
         this.compositeData = new Array(this.totalPoints).fill(undefined)
         this.compositeFreqs = new Array(this.totalPoints)
@@ -112,14 +108,13 @@ class HiResScan {
         log.info(`HiRes: Starting scan with ${this.segments.length} segments, ${this.totalPoints} total points`)
         log.info(`HiRes: Segment span: ${((this.segments[0].stop - this.segments[0].start) / 1000000).toFixed(3)} MHz`)
 
-        await this._scanLoop(scanDevice, data$, nativePoints, convertValueFn, deviceType)
+        await this._scanLoop(scanDevice, data$, nativePoints, convertValueFn, deviceType, onProgress, onComplete)
         return true
     }
 
     stop () {
         log.info('HiRes: Stopping scan')
         this.active = false
-        this.aborted = true
     }
 
     isActive () {
@@ -135,16 +130,16 @@ class HiResScan {
         }
     }
 
-    async _scanLoop (scanDevice, data$, nativePoints, convertValueFn, deviceType) {
-        while ( this.active && !this.aborted ) {
+    async _scanLoop (scanDevice, data$, nativePoints, convertValueFn, deviceType, onProgress, onComplete) {
+        while ( this.active ) {
             for ( let segIdx = 0; segIdx < this.segments.length; segIdx++ ) {
-                if ( !this.active || this.aborted ) break
+                if ( !this.active ) break
 
                 this.currentSegment = segIdx
                 const seg = this.segments[segIdx]
 
-                if ( this.onProgress ) {
-                    this.onProgress(segIdx, this.segments.length)
+                if ( onProgress ) {
+                    onProgress(segIdx, this.segments.length)
                 }
 
                 try {
@@ -159,7 +154,7 @@ class HiResScan {
 
                     // Collect sweeps for this segment
                     for ( let sweep = 0; sweep < SWEEPS_PER_SEGMENT; sweep++ ) {
-                        if ( !this.active || this.aborted ) break
+                        if ( !this.active ) break
 
                         try {
                             const scanData = await firstValueFrom(
@@ -192,13 +187,13 @@ class HiResScan {
             }
 
             // Full cycle complete — emit results
-            if ( this.active && !this.aborted && this.onComplete ) {
+            if ( this.active && onComplete ) {
                 log.info('HiRes: Full scan cycle complete')
-                this.onComplete(this.compositeData.slice(), this.compositeFreqs, this.totalPoints)
+                onComplete(this.compositeData.slice(), this.compositeFreqs, this.totalPoints)
             }
 
             // Reset composite for next cycle (allow new peaks)
-            if ( this.active && !this.aborted ) {
+            if ( this.active ) {
                 this.compositeData = new Array(this.totalPoints).fill(undefined)
             }
         }

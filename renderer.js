@@ -19,6 +19,7 @@ const moment                    = require('moment-timezone');
 const RFExplorer                = require('./scan_devices/rf_explorer.js');
 const TinySA                    = require('./scan_devices/tiny_sa.js');
 const HiResScan                 = require('./hires_scan.js');
+const DEVICE_CLASSES            = { 'RF_EXPLORER': RFExplorer, 'TINY_SA': TinySA };
 
 const SAVED_DATA_VERSION = 1
 
@@ -63,10 +64,10 @@ let ctx = null;
 const RECONNECT_DELAY_MIN = 1000   // 1 second
 const RECONNECT_DELAY_MAX = 15000  // 15 seconds
 const PORT_POLL_INTERVAL  = 3000   // 3 seconds
-let reconnectTimer    = null
 let reconnectDelay    = RECONNECT_DELAY_MIN
 let portPollTimer     = null
 let isReconnecting    = false
+let reconnectWake     = null       // resolves the current backoff delay early (hotplug)
 
 // High-resolution scan state
 let hiResScan = new HiResScan()
@@ -185,38 +186,31 @@ var myChart = null
 function startHiResScan () {
     if ( !scanDevice || !hiResEnabled ) return
 
-    const deviceClasses = { 'RF_EXPLORER': RFExplorer, 'TINY_SA': TinySA }
-    const deviceClass = deviceClasses[global.SCAN_DEVICE]
+    const deviceClass = DEVICE_CLASSES[global.SCAN_DEVICE]
     if ( !deviceClass ) return
 
-    const nativePoints = global.SWEEP_POINTS
-    const minSpan = global.MIN_SPAN || 112000
-
+    const progress = document.getElementById('toolbar-hires-progress')
     hiResScan = new HiResScan()
 
-    hiResScan.onProgress = (segIdx, totalSegs) => {
-        const progress = document.getElementById('toolbar-hires-progress')
-        if ( progress ) {
-            progress.style.display = 'inline'
-            progress.textContent = `Seg ${segIdx + 1}/${totalSegs}`
-        }
-    }
-
-    hiResScan.onComplete = (compositeData, compositeFreqs, totalPoints) => {
-        const progress = document.getElementById('toolbar-hires-progress')
-        if ( progress ) {
-            progress.textContent = `${totalPoints} pts`
-        }
-        displayHiResResults(compositeData, compositeFreqs, totalPoints)
-    }
-
-    hiResScan.start(
+    hiResScan.start({
         scanDevice, data$,
-        global.START_FREQ, global.STOP_FREQ,
-        nativePoints, minSpan,
-        deviceClass.convertScanValue,
-        global.SCAN_DEVICE
-    ).catch(err => {
+        startFreq: global.START_FREQ,
+        stopFreq: global.STOP_FREQ,
+        nativePoints: global.SWEEP_POINTS,
+        minSpan: global.MIN_SPAN || 112000,
+        convertValueFn: deviceClass.convertScanValue,
+        deviceType: global.SCAN_DEVICE,
+        onProgress (segIdx, totalSegs) {
+            if ( progress ) {
+                progress.style.display = 'inline'
+                progress.textContent = `Seg ${segIdx + 1}/${totalSegs}`
+            }
+        },
+        onComplete (compositeData, compositeFreqs, totalPoints) {
+            if ( progress ) progress.textContent = `${totalPoints} pts`
+            displayHiResResults(compositeData, compositeFreqs, totalPoints)
+        }
+    }).catch(err => {
         log.error(`HiRes scan failed: ${err}`)
         hiResEnabled = false
         const btn = document.getElementById('toolbar-hires')
@@ -320,49 +314,21 @@ document.addEventListener('DOMContentLoaded', function () {
     toolbarStopFreq.addEventListener ('keydown', (e) => { if (e.key === 'Enter') toolbarApplyBtn.click() })
 
     // Zoom and pan buttons
-    document.getElementById('toolbar-zoom-in').addEventListener('click', async () => {
+    async function toolbarNavAction (fn, amount) {
         if (isExecuting) return
         isExecuting = true
         try {
-            zoom(10)
+            fn(amount)
             BAND_DETAILS = ''
             showWaitIndicator()
             await scanDevice.setConfiguration(global.START_FREQ, global.STOP_FREQ, global.SWEEP_POINTS)
         } finally { isExecuting = false }
-    })
+    }
 
-    document.getElementById('toolbar-zoom-out').addEventListener('click', async () => {
-        if (isExecuting) return
-        isExecuting = true
-        try {
-            zoom(-10)
-            BAND_DETAILS = ''
-            showWaitIndicator()
-            await scanDevice.setConfiguration(global.START_FREQ, global.STOP_FREQ, global.SWEEP_POINTS)
-        } finally { isExecuting = false }
-    })
-
-    document.getElementById('toolbar-pan-left').addEventListener('click', async () => {
-        if (isExecuting) return
-        isExecuting = true
-        try {
-            move(-10)
-            BAND_DETAILS = ''
-            showWaitIndicator()
-            await scanDevice.setConfiguration(global.START_FREQ, global.STOP_FREQ, global.SWEEP_POINTS)
-        } finally { isExecuting = false }
-    })
-
-    document.getElementById('toolbar-pan-right').addEventListener('click', async () => {
-        if (isExecuting) return
-        isExecuting = true
-        try {
-            move(10)
-            BAND_DETAILS = ''
-            showWaitIndicator()
-            await scanDevice.setConfiguration(global.START_FREQ, global.STOP_FREQ, global.SWEEP_POINTS)
-        } finally { isExecuting = false }
-    })
+    document.getElementById('toolbar-zoom-in').addEventListener('click',   () => toolbarNavAction(zoom,  10))
+    document.getElementById('toolbar-zoom-out').addEventListener('click',  () => toolbarNavAction(zoom, -10))
+    document.getElementById('toolbar-pan-left').addEventListener('click',  () => toolbarNavAction(move, -10))
+    document.getElementById('toolbar-pan-right').addEventListener('click', () => toolbarNavAction(move,  10))
 
     // Reset peak button
     document.getElementById('toolbar-reset-peak').addEventListener('click', () => {
@@ -666,77 +632,66 @@ function openDonateWindow () {
 }
 
 function cancelAutoReconnect () {
-    if ( reconnectTimer ) {
-        clearTimeout(reconnectTimer)
-        reconnectTimer = null
+    isReconnecting = false
+    reconnectDelay = RECONNECT_DELAY_MIN
+    if ( reconnectWake ) {
+        reconnectWake()
+        reconnectWake = null
     }
     if ( portPollTimer ) {
         clearInterval(portPollTimer)
         portPollTimer = null
     }
-    isReconnecting = false
-    reconnectDelay = RECONNECT_DELAY_MIN
 }
 
-function scheduleReconnect () {
+async function scheduleReconnect () {
     if ( isReconnecting ) return
     isReconnecting = true
     reconnectDelay = RECONNECT_DELAY_MIN
 
-    function attemptReconnect () {
-        log.info ( `Auto-reconnect: attempting in ${reconnectDelay/1000}s ...` )
-        setConnectionStatus('connecting', `Reconnecting in ${Math.round(reconnectDelay/1000)}s...`)
-
-        reconnectTimer = setTimeout ( () => {
-            reconnectTimer = null
-            log.info ( 'Auto-reconnect: trying now ...' )
-            setConnectionStatus('connecting', 'Reconnecting...')
-
-            disconnectPort().then ( () => {
-                scanPorts().then ( () => {
-                    connectPort(COM_PORT ? COM_PORT : 'AUTO')
-                        .then ( () => {
-                            // Success — reset state and start scanning
-                            cancelAutoReconnect()
-                            scanDevice.getConfiguration()
-                        })
-                        .catch ( () => {
-                            // Port open failed — retry with backoff
-                            reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_DELAY_MAX)
-                            attemptReconnect()
-                        })
-                }).catch ( () => {
-                    // No ports found — retry with backoff
-                    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_DELAY_MAX)
-                    attemptReconnect()
-                })
-            })
-        }, reconnectDelay)
-    }
-
-    attemptReconnect()
-
-    // Also poll for new ports appearing (hotplug detection)
+    // Poll for USB hotplug — wake up backoff delay when ports change
     if ( !portPollTimer ) {
-        portPollTimer = setInterval ( () => {
+        portPollTimer = setInterval(() => {
             if ( !isReconnecting ) {
                 clearInterval(portPollTimer)
                 portPollTimer = null
                 return
             }
-            SerialPort.list().then ( (ports) => {
+            SerialPort.list().then(ports => {
                 if ( ports.length > 0 && ports.length !== globalPorts.length ) {
-                    log.info ( `Auto-reconnect: port list changed (${globalPorts.length} -> ${ports.length}), retrying immediately` )
-                    // Cancel current backoff timer and retry now
-                    if ( reconnectTimer ) {
-                        clearTimeout(reconnectTimer)
-                        reconnectTimer = null
-                    }
+                    log.info(`Auto-reconnect: port list changed (${globalPorts.length} -> ${ports.length}), retrying immediately`)
                     reconnectDelay = RECONNECT_DELAY_MIN
-                    attemptReconnect()
+                    if ( reconnectWake ) reconnectWake()
                 }
-            }).catch ( () => {} ) // Ignore poll errors
+            }).catch(() => {})
         }, PORT_POLL_INTERVAL)
+    }
+
+    while ( isReconnecting ) {
+        log.info(`Auto-reconnect: attempting in ${reconnectDelay / 1000}s ...`)
+        setConnectionStatus('connecting', `Reconnecting in ${Math.round(reconnectDelay / 1000)}s...`)
+
+        // Wait for backoff delay (or wake early on hotplug)
+        await new Promise(resolve => {
+            reconnectWake = resolve
+            setTimeout(resolve, reconnectDelay)
+        })
+        reconnectWake = null
+        if ( !isReconnecting ) break
+
+        log.info('Auto-reconnect: trying now ...')
+        setConnectionStatus('connecting', 'Reconnecting...')
+
+        try {
+            await disconnectPort()
+            await scanPorts()
+            await connectPort(COM_PORT ? COM_PORT : 'AUTO')
+            cancelAutoReconnect()
+            scanDevice.getConfiguration()
+            return
+        } catch {
+            reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_DELAY_MAX)
+        }
     }
 }
 
@@ -1066,8 +1021,7 @@ let tryPort = (index) => {
 }
 
 const portOpenCb = () => {
-    const deviceClasses = { 'RF_EXPLORER': RFExplorer, 'TINY_SA': TinySA }
-    const deviceClass = deviceClasses[global.SCAN_DEVICE]
+    const deviceClass = DEVICE_CLASSES[global.SCAN_DEVICE]
 
     if ( !deviceClass ) {
         log.error ( `Unknown scan device ${global.SCAN_DEVICE}` )
