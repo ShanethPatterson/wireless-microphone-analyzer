@@ -24,6 +24,13 @@ V2.6.0
 * Added getDisplayName() and convertScanValue() to device classes (RFExplorer, TinySA)
 * Fixed missing portDetectionIndex reset in RF Explorer reconnect handler (was already present in TinySA branch)
 * Fixed variable shadowing (inner loop variable `i` renamed to `j`) in scan data congestion check
+* Collapsed redundant active/aborted flags to single flag in HiResScan
+* DRYed four identical zoom/pan handlers into one helper function
+* Flattened recursive reconnect callback nesting into async while-loop
+* Hoisted device class map to module level (was duplicated in two places)
+
+## CI/CD
+* Added GitHub Actions workflow — runs tests on push to master and on pull requests
 
 V2.5.0
 ## New Features
